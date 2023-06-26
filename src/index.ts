@@ -3,23 +3,29 @@ import * as path from "path";
 import * as fs from "fs";
 import "zx/globals";
 import type buildProject from "../chains/build-project";
+import type iterator from "../chains/iterator";
 import { config } from "./config";
+
+// TODO: Should the files be in Redis so that next steps can prompt?
+
+const problemStatement =
+  "Build a TODO app, where users can add and remove todos and mark them as complete.";
+const expectations = [
+  "I can reach the TODO app from a web browser",
+  "The headline says TODO app",
+  "I can add a TODO and it appears in the list of TODOs",
+  "I can remove a TODO and it disappears from the list of TODOs",
+  "I can mark a TODO as complete and it gets a strikethrough",
+  "The service needs to be reachable from the public internet",
+].join(", ");
 
 (async function () {
   const client = new Client({ region: config.REGION, project: config.PROJECT });
   //   const { answer } = await client.runChain<typeof buildProject>(
   //     "build-project",
   //     {
-  //       problemStatement:
-  //         "Build a TODO app, where users can add and remove todos and mark them as complete.",
-  //       expectations: [
-  //         "I can reach the TODO app from a web browser",
-  //         "The headline says TODO app",
-  //         "I can add a TODO and it appears in the list of TODOs",
-  //         "I can remove a TODO and it disappears from the list of TODOs",
-  //         "I can mark a TODO as complete and it gets a strikethrough",
-  //         "The service needs to be reachable from the public internet",
-  //       ].join(", "),
+  //       problemStatement,
+  //       expectations,
   //     }
   //   );
 
@@ -36,45 +42,68 @@ import { config } from "./config";
   }
   fs.mkdirSync(outputDir);
 
-  for (const [filePath, contents] of Object.entries(
-    code as Record<string, string>
-  )) {
-    const fullPath = path.join(outputDir, filePath);
-    const dir = path.dirname(fullPath);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-    fs.writeFileSync(fullPath, contents, "utf8");
-  }
+  console.log("TODO: Some AI should do the following", tasks);
 
-  // Run terraform init
-  cd(outputDir);
-  try {
+  async function trySolution(code: Record<string, string>) {
+    for (const [filePath, contents] of Object.entries(code)) {
+      const fullPath = path.join(outputDir, filePath);
+      const dir = path.dirname(fullPath);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      fs.writeFileSync(fullPath, contents, "utf8");
+    }
+    cd(outputDir);
+
     await $`terraform init`;
-  } catch (e) {
-    // TODO: feed this into recursive prompt
-    console.error(`terraform init errored: ${e}`);
-  }
 
-  const typicalAwsEnvVars = {
-    aws_access_key: process.env.AWS_ACCESS_KEY_ID,
-    aws_secret_key: process.env.AWS_SECRET_ACCESS_KEY,
-    aws_region: process.env.AWS_REGION || "us-east-1",
-  };
-  try {
-    for (const [key, value] of Object.entries(typicalAwsEnvVars)) {
-      process.env[`TF_VAR_${key}`] = value;
-    }
+    const typicalAwsEnvVars = {
+      aws_access_key: process.env.AWS_ACCESS_KEY_ID,
+      aws_secret_key: process.env.AWS_SECRET_ACCESS_KEY,
+      aws_region: process.env.AWS_REGION || "us-east-1",
+    };
+    try {
+      for (const [key, value] of Object.entries(typicalAwsEnvVars)) {
+        process.env[`TF_VAR_${key}`] = value;
+      }
 
-    await $`terraform apply -auto-approve`;
-  } catch (e) {
-    // TODO: feed this into recursive prompt
-    console.error(`terraform apply errored: ${e}`);
-  } finally {
-    for (const key of Object.keys(typicalAwsEnvVars)) {
-      process.env[`TF_VAR_${key}`] = undefined;
+      await $`terraform apply -auto-approve`;
+    } finally {
+      for (const key of Object.keys(typicalAwsEnvVars)) {
+        process.env[`TF_VAR_${key}`] = undefined;
+      }
     }
   }
 
+  let codeToTry = code;
+  let count = 0;
+  let success = false;
+  do {
+    count++;
+
+    try {
+      await trySolution(codeToTry);
+      console.log("trySolution succeeded");
+      success = true;
+    } catch (e) {
+      console.error(`trySolution errored: ${e}`);
+      success = false;
+      try {
+        const { answer } = await client.runChain<typeof iterator>("iterator", {
+          problemStatement,
+          expectations,
+          errors: String(e),
+          previousFilesAsJson: JSON.stringify(codeToTry),
+        });
+        console.log("Iterating with answer", answer);
+        codeToTry = JSON.parse(answer);
+      } catch (e) {
+        console.error(`iterator errored: ${e}`);
+        success = false;
+      }
+    }
+  } while (!success && count < 3);
+
+  console.log("TODO: should run some tests against", url_output);
   // TODO: run tests
 })();
